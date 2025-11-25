@@ -1,0 +1,693 @@
+---
+title: "ADA - A/B Testing"
+author: "Group 32"
+date: "2025-01-23"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+
+# Data Dictionary
+
+The data is provided from the A/B test run within the Loan Review department. The variables are described in the table below:
+
+Variable | Description
+------------- | -------------
+Variant | The experimental variant randomly assigned to each loan officer
+loanofficer_id | Unique identifier for each loan officer
+day | The day of the experiment (e.g. 1 means 1st day, 2 means 2nd day, etc.)
+typeI_init | Count of each loan officer’s Type I errors (false positives – rejecting good loans) before seeing computer predictions
+typeI_fin | Count of each loan officer’s Type I errors (false positives – rejecting good loans) after seeing computer predictions
+typeII_init | Count of each loan officer’s Type II errors (false negatives – approving bad loans) before seeing computer predictions
+typeII_fin | Count of each loan officer’s Type II errors (false negatives – approving bad loans) after seeing computer predictions
+ai_typeI | Count of computer model's Type I errors (false positives – rejecting good loans)
+ai_typeII | Count of computer model's Type II errors (false negatives – approving bad loans)
+badloans_num | Number of bad loans (loans that defaulted)
+goodloans_num | Number of good loans (loans that were paid back on time)
+agree_init | Count of each loan officer’s agreements with computer predictions before seeing computer predictions
+agree_fin | Count of each loan officer’s agreements with computer predictions after seeing computer predictions
+conflict_init | Count of each loan officer’s conflicts with computer predictions before seeing computer predictions
+conflict_fin | Count of each loan officer’s conflicts with computer predictions after seeing computer predictions
+revised_per_ai | Count of each loan officer’s decisions that were revised to follow computer predictions
+revised_agst_ai | Count of each loan officer’s decisions that were revised to go against computer predictions
+confidence_init_total | Sum of confidence ratings given by each loan officer to their completed loan review decisions (how sure they were in their decisions) before seeing computer predictions
+confidence_fin_total | Sum of confidence ratings given by each loan officer to their completed loan review decisions (how sure they were in their decisions) after seeing computer predictions
+complt_init | Count of initial loan review decisions completed by each loan officer before seeing computer predictions
+complt_fin | Count of final loan review decisions completed by each loan officer after seeing computer predictions
+fully_complt | Count of each loan officer’s fully completed loan reviews (in both stages – before and after seeing computer predictions)
+
+
+---
+
+
+# Setup
+```{r}
+# Load required libraries.
+library(dplyr)
+library(tidyverse)
+options(width = 130)
+library(ggplot2)
+library(effectsize)
+library(pwr)
+library(scales) 
+library(ggdist)
+library(ggsignif)
+```
+
+
+# Read Data
+```{r}
+# Load and store the data.
+loan_data <- read_csv("D:/ASSIGNMENT_WBS_MSBA_2024-2025/ADA_GROUP_32_ASSESSMENT/ADAproject_2025_data.csv")
+```
+
+
+# Step 1. Data Preparation and Observations
+## **Data Quality Check**
+```{r}
+# Check for number of entries.
+nrow(loan_data)
+
+# Check for missing values.
+colSums(is.na(loan_data))
+
+# Check columns for values which do not match problem requirements. Nothing violates the 10 loan limit or 1000 score for confidence level.
+summary(loan_data)
+
+# Check for number of distinct loan officers.
+n_distinct(loan_data$loanofficer_id)
+
+# Check the number of loan officers in the control and treatment groups. 
+loan_data %>%
+  group_by(Variant) %>%
+  summarize(unique_officer_count = n_distinct(loanofficer_id))
+
+# Check for the number of entries where no loan reviews are fully completed.
+loan_data %>%
+  select(Variant, loanofficer_id, fully_complt) %>%
+  filter(fully_complt==0)
+
+# It seems that many loan officers who do not fully complete any loan reviews on a given day consistently do not fully complete loan reviews. Find all loan officers who no not fully complete any loan reviews.
+loan_data %>%
+  group_by(loanofficer_id, Variant) %>%
+  summarize(not_fully_completed = sum(fully_complt == 0)) %>%
+  filter(not_fully_completed > 0)
+    
+```
+
+
+## **Data Set Creation and Observations**
+```{r}
+# Convert Variant to a factor.
+loan_data$Variant <- as.factor(loan_data$Variant)
+
+# Create a new data set without loan officers who do not fully complete any loan reviews.
+loan_data2 <- loan_data %>%
+  filter(fully_complt>0)
+
+nrow(loan_data2)
+```
+
+```{r}
+# Checking if a loan officer is completing a loan if it has been assigned to it. 
+loan_data2$complt_condition <- ifelse(loan_data2$complt_fin == loan_data2$fully_complt, "Yes", "No")
+
+# Check the instances of full completion of loan reviews versus not.
+loan_data2 %>%
+  group_by(complt_condition) %>%
+  summarize(n = n())
+
+# Checking if the number of goodloans and badloans add up to 10, i.e. if all the loans has been marked by the loan officer or not. 
+loan_data2$loan_number_condition <- ifelse(loan_data2$badloans_num + loan_data2$goodloans_num == 10, "Yes", "No")
+
+# Check the instances of goodloans and badloans adding up to 10 versus not.
+loan_data2 %>%
+  group_by(loan_number_condition) %>%
+  summarize(n = n())
+
+# Checking if the number of loans the loan officer started working is the same as the number of loans he gives his decision on.
+loan_data2$agree_con_condition <- ifelse(loan_data2$agree_init + loan_data2$conflict_init == loan_data2$agree_fin + loan_data2$conflict_fin, "Yes", "No")
+
+# Check the instances in which the number of loans an officer starts working on is the same as when he finishes. 
+loan_data2 %>%
+  group_by(agree_con_condition) %>%
+  summarize(n = n())
+
+# Checking if the loan officer finishes all the loans they start.
+loan_data2$finish_condition <- ifelse(loan_data2$complt_fin >= loan_data2$complt_init, "Yes", "No")
+
+# Check the instances where loan officers finish loans they start versus not. 
+loan_data2 %>%
+  group_by(finish_condition) %>%
+  summarize(n = n())
+
+# Check if the number of initial errors is less than or equal to the number of initial loan reviews an officer makes. 
+loan_data2$error_init_condition <- ifelse(loan_data2$typeI_init + loan_data2$typeII_init <= loan_data2$complt_init, "Yes", "No")
+
+# Check the instances where initial errors are less than the number of initial loan reviews made versus not. 
+loan_data2 %>%
+  group_by(error_init_condition) %>%
+  summarize(n = n())
+
+# Check if the number of final errors is less than or equal to the number of final loan reviews an officer makes. 
+loan_data2$error_fin_condition <- ifelse(loan_data2$typeI_fin + loan_data2$typeII_fin <= loan_data2$complt_fin, "Yes", "No")
+
+# Check the instances where final errors are less than the number of final loan reviews made versus not. 
+loan_data2 %>%
+  group_by(error_fin_condition) %>%
+  summarize(n = n())
+
+# At the end of the observations, we conclude that we cannot use recall with the current data set, but can calculate weighted percentage error change.
+```
+
+```{r}
+# To calculate recall, we can consider recall change rate and final recall to compare the two models. To calculate these metrics, we need initial and final loans reviewed to both be 10.
+loan_data3 <- loan_data2 %>%
+  filter(fully_complt == 10)
+
+nrow(loan_data3)
+```
+
+
+## **Data Transformations**
+### *Percentage Error Change Rate*
+```{r}
+# Aggregate the data set without loan officers who do not fully complete any loan reviews by loan officer and variant in preparation for calculating percentage error change. 
+aggregated_data2 <- loan_data2 %>%
+  group_by(Variant, loanofficer_id) %>%
+  summarise(
+    typeI_init_avg = mean(typeI_init),
+    typeI_fin_avg = mean(typeI_fin),
+    typeII_init_avg = mean(typeII_init),
+    typeII_fin_avg = mean(typeII_fin),
+    confidence_init_avg = mean(confidence_init_total / complt_init), 
+    confidence_fin_avg = mean(confidence_fin_total / complt_fin), 
+    revised_per_ai_avg = mean(revised_per_ai),
+    revised_agst_ai_avg = mean(revised_agst_ai),
+    agree_diff = mean(agree_fin - agree_init),
+    conflict_diff = mean(conflict_fin - conflict_init),
+    complt_diff = mean(complt_fin - complt_init),
+    badloans_avg = mean(badloans_num),
+    goodloans_avg = mean(goodloans_num),
+    complt_init_avg = mean(complt_init),
+    complt_fin_avg = mean(complt_fin),
+    .groups = "drop"
+  )
+
+# Calculate initial and final error percentages for the data set without loan officers who do not fully complete any loan reviews. 
+aggregated_data2 <- aggregated_data2%>%
+  mutate(type1_init = typeI_init_avg / complt_init_avg,
+         type2_init = typeII_init_avg / complt_init_avg,
+         type1_fin = typeI_fin_avg / complt_fin_avg,
+         type2_fin = typeII_fin_avg / complt_fin_avg
+         )
+
+# Calculate change in type I and type II error before and after looking computer model results. The weight type I and type II error and aggregate to create a metric that represents both error types. This is for the data set without loan officers who do not fully complete any loan reviews. 
+error_change_data <- aggregated_data2%>%
+  mutate(type1_dif = type1_fin - type1_init,
+         type2_dif = type2_fin - type2_init,
+         error_dif = 1/3*type1_dif + 2/3*type2_dif
+         )
+```
+
+### *Percentage Error Change Rate Data Visualisations*
+```{r}
+# This code creates two complete pie charts to show how many records are "Removed" (fully_complt == 0) vs. "Kept" (fully_complt > 0) within each Variant (Control/Treatment), for the data set excluding loan officers who do not fully complete any loan reviews. (Data set used for calculating error change rate, remember we removed 90 rows for this from the original 470 rows)
+
+loan_data %>%
+  mutate(
+    filtered_out = ifelse(fully_complt == 0, "Removed", "Kept")
+  ) %>%
+  group_by(Variant, filtered_out) %>%
+  summarise(num_records = n(), .groups = "drop") %>%
+  group_by(Variant) %>%
+  mutate(prop = num_records / sum(num_records)) %>%
+  ggplot(aes(x = "", y = prop, fill = filtered_out)) +
+    # Stacked bar for creating the polar pie
+    geom_bar(stat = "identity", width = 1, color = "white") +
+    # Add text labels for the percentage in each slice
+    geom_text(
+      aes(label = scales::percent(prop, accuracy = 1)),
+      position = position_stack(vjust = 0.5),  # Centered in each slice
+      color = "white",                        # Text color, adjust if needed
+      size = 4                                # Adjust text size as you prefer
+    ) +
+    # Turn the stacked bar into a pie chart
+    coord_polar("y", start = 0) +
+    # One pie chart per variant
+    facet_wrap(~ Variant) +
+    # (Optional) If you want y-axis to show percentages, though typically hidden by theme_void()
+    scale_y_continuous(labels = percent_format(accuracy = 1)) +
+    # Remove background, ticks, and axes for a clean look
+    theme_void() +
+    theme(
+      legend.position = "bottom"
+    ) +
+    labs(
+      title = "Records Kept vs. Removed per Variant",
+      fill  = "Status"
+    )
+
+# Histograms for type I error change rate, type II error change rate, and weighted error change rate.
+ggplot(error_change_data, aes(x = type1_dif, fill = Variant)) +
+  geom_histogram(
+    bins = 10,
+    position = "dodge",   # place Control vs. Treatment bars side by side
+    alpha = 0.8,
+    color = "white"
+  ) +
+  labs(
+    title = "Histogram of Type I Error Difference (Side-by-Side)",
+    x = "Type I Error Difference (Final - Init)",
+    y = "Count"
+  ) +
+  theme_minimal()
+
+
+ggplot(error_change_data, aes(x = type2_dif, fill = Variant)) +
+  geom_histogram(
+    bins = 10,
+    position = "dodge",
+    alpha = 0.8,
+    color = "white"
+  ) +
+  labs(
+    title = "Histogram of Type II Error Difference (Side-by-Side)",
+    x = "Type II Error Difference (Final - Init)",
+    y = "Count"
+  ) +
+  theme_minimal()
+
+ggplot(error_change_data, aes(x = error_dif, fill = Variant)) +
+  geom_histogram(
+    bins = 10,
+    position = "dodge",
+    alpha = 0.8,
+    color = "white"
+  ) +
+  labs(
+    title = "Histogram of Weighted Error Difference (Side-by-Side)",
+    x = "Weighted Error Difference (Final - Init)",
+    y = "Count"
+  ) +
+  theme_minimal()
+
+# Raincloud Plot for error differences.
+# Reshape the data similarly.
+error_long <- error_change_data %>%
+  select(loanofficer_id, Variant, type1_dif, type2_dif, error_dif) %>%
+  pivot_longer(
+    cols = c(type1_dif, type2_dif, error_dif),
+    names_to = "ErrorType",
+    values_to = "DiffValue"
+  )
+
+# Create a "raincloud" style plot.
+ggplot(error_long, aes(x = ErrorType, y = DiffValue, fill = Variant)) +
+  stat_halfeye(
+    adjust = 0.5,        
+    width = 0.6,         
+    justification = -0.2,
+    .width = 0.9,        
+    point_interval = "mean_sd"  
+  ) +
+  geom_jitter(
+    aes(color = Variant),
+    width = 0.15,    
+    alpha = 0.6,
+    size = 1
+  ) +
+  facet_wrap(~ Variant, nrow = 1) +
+  labs(
+    title = "Raincloud Plot of Error Differences (Type I, Type II, Weighted)",
+    x = "Error Difference Metric",
+    y = "Final - Initial"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "none"
+  )
+```
+
+
+
+### *Recall*
+```{r}
+# Aggregate the data set excluding loan officers who do not fully complete 10 loan reviews by loan officer and variant in preparation for calculating recall change rate and final recall.
+aggregated_data3 <- loan_data3 %>%
+  group_by(Variant, loanofficer_id) %>%
+  summarise(
+    typeI_init_avg = mean(typeI_init),
+    typeI_fin_avg = mean(typeI_fin),
+    typeII_init_avg = mean(typeII_init),
+    typeII_fin_avg = mean(typeII_fin),
+    confidence_init_avg = mean(confidence_init_total / complt_init), 
+    confidence_fin_avg = mean(confidence_fin_total / complt_fin), 
+    revised_per_ai_avg = mean(revised_per_ai),
+    revised_agst_ai_avg = mean(revised_agst_ai),
+    agree_diff = mean(agree_fin - agree_init),
+    conflict_diff = mean(conflict_fin - conflict_init),
+    complt_diff = mean(complt_fin - complt_init),
+    badloans_avg = mean(badloans_num),
+    goodloans_avg = mean(goodloans_num),
+    .groups = "drop"
+  )
+
+# Calculate initial recall, final recall, and recall change for the data set excluding loan officers who do not fully complete 10 loan reviews. 
+recall_data <- aggregated_data3%>%
+  mutate(recall_init = (badloans_avg - typeII_init_avg) / badloans_avg,
+         recall_fin = (badloans_avg - typeII_fin_avg) / badloans_avg,
+         recall_dif = recall_fin - recall_init
+         )
+```
+
+## **Recall Data Visualisations**
+```{r}
+# This code creates two complete pie charts to show how many records are "Removed" (fully_complt != 10) vs. "Kept" (fully_complt == 10) within each Variant (Control/Treatment), for the data set excluding loan officers who do not fully complete all loan reviews. (Data set used for calculating recall and recall change, remember we removed 140 rows for this from the original 470 rows)
+loan_data %>%
+  mutate(
+    filtered_out = ifelse(fully_complt != 10, "Removed", "Kept")
+  ) %>%
+  group_by(Variant, filtered_out) %>%
+  summarise(num_records = n(), .groups = "drop") %>%
+  group_by(Variant) %>%
+  mutate(prop = num_records / sum(num_records)) %>%
+  ggplot(aes(x = "", y = prop, fill = filtered_out)) +
+    # Stacked bar for creating the polar pie
+    geom_bar(stat = "identity", width = 1, color = "white") +
+    # Add text labels for the percentage in each slice
+    geom_text(
+      aes(label = scales::percent(prop, accuracy = 1)),
+      position = position_stack(vjust = 0.5),  # Centered in each slice
+      color = "white",                        # Text color, adjust if needed
+      size = 4                                # Adjust text size as you prefer
+    ) +
+    # Turn the stacked bar into a pie chart
+    coord_polar("y", start = 0) +
+    # One pie chart per variant
+    facet_wrap(~ Variant) +
+    # (Optional) If you want y-axis to show percentages, though typically hidden by theme_void()
+    scale_y_continuous(labels = percent_format(accuracy = 1)) +
+    # Remove background, ticks, and axes for a clean look
+    theme_void() +
+    theme(
+      legend.position = "bottom"
+    ) +
+    labs(
+      title = "Records Kept vs. Removed per Variant",
+      fill  = "Status"
+    )
+
+# Histograms for initial recall, final recall, and recall change.
+ggplot(recall_data, aes(x = recall_init, fill = Variant)) +
+  geom_histogram(
+    bins = 10,
+    position = "dodge",
+    alpha = 0.8,
+    color = "white"
+  ) +
+  labs(
+    title = "Histogram of Initial Recall (Side-by-Side)",
+    x = "Recall (Initial)",
+    y = "Count"
+  ) +
+  theme_minimal()
+
+ggplot(recall_data, aes(x = recall_fin, fill = Variant)) +
+  geom_histogram(
+    bins = 10,
+    position = "dodge",
+    alpha = 0.8,
+    color = "white"
+  ) +
+  labs(
+    title = "Histogram of Final Recall (Side-by-Side)",
+    x = "Recall (Final)",
+    y = "Count"
+  ) +
+  theme_minimal()
+
+ggplot(recall_data, aes(x = recall_dif, fill = Variant)) +
+  geom_histogram(
+    bins = 10,
+    position = "dodge",
+    alpha = 0.8,
+    color = "white"
+  ) +
+  labs(
+    title = "Histogram of Recall Difference (Side-by-Side)",
+    x = "Recall (Final - Init)",
+    y = "Count"
+  ) +
+  theme_minimal()
+
+# Scatter Plot with diagonal line to compare recall_init vs. recall_fin.
+ggplot(recall_data, aes(x = recall_init, y = recall_fin, color = Variant)) +
+  geom_point(alpha = 0.7, size = 3) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray50") +
+  labs(
+    title = "Initial vs. Final Recall by Variant",
+    x = "Initial Recall",
+    y = "Final Recall"
+  ) +
+  theme_minimal()
+```
+
+
+# Step 2. Data Analysis: Hypothesis Testing (T-Tests)
+## **Percentage Error Change Rate**
+```{r}
+# The difference is statistically significant as p<0.05 meaning the null hypothesis that the difference between Control and Treatment means for type I error change rate is 0 is rejected.
+t.test(
+  type1_dif ~ Variant,
+  data = error_change_data,
+  var.equal = FALSE
+)
+
+# The difference isn't statistically significant as p> 0.05 meaning the null hypothesis that the difference between Control and Treatment means for type II error change rate is 0 is not rejected. 
+t.test(
+  type2_dif ~ Variant,
+  data = error_change_data,
+  var.equal = FALSE
+)
+
+
+# The difference is statistically significant as p< 0.05 meaning the null hypothesis that the difference between Control and Treatment means for weighted error change rate is 0 is rejected.
+t.test(
+  error_dif ~ Variant,
+  data = error_change_data,
+  var.equal = FALSE
+)
+```
+
+
+## **Recall**
+```{r}
+# The difference is not statistically significant as p> 0.05 meaning the null hypothesis that the difference between Control and Treatment means for type II error change rate is 0 is not rejected.  
+t.test(
+  recall_init ~ Variant,
+  data = recall_data,
+  var.equal = FALSE
+)
+
+# The difference is statistically significant as p< 0.05 meaning the null hypothesis that the difference between Control and Treatment means for final recall (after looking a model predictions) is 0 is rejected.
+t.test(
+  recall_fin ~ Variant,
+  data = recall_data,
+  var.equal = FALSE
+)
+
+# The difference is statistically significant as p< 0.05 meaning the null hypothesis that the difference between Control and Treatment means for recall change (recall score difference before and after looking at computer model predictions) is 0 is rejected.
+t.test(
+  recall_dif ~ Variant,
+  data = recall_data,
+  var.equal = FALSE
+)
+
+```
+
+
+# Step 3. Data Analysis: Compute Difference in Mean OEC between Variants
+## **Percentage Error Change Rate**
+```{r}
+# Calculate mean values of different error-related metrics for each Variant of the data set without loan officers who do not fully complete any loan reviews.
+mean_error_by_variant <- error_change_data %>%
+  group_by(Variant) %>%
+  summarise(
+    mean_type1_dif = mean(type1_dif),
+    mean_type2_dif = mean(type2_dif),
+    mean_error_dif = mean(error_dif),
+    mean_type1_percent = mean(type1_dif) * 100,
+    mean_type2_percent = mean(type2_dif) * 100,
+    mean_error_percent = mean(error_dif) * 100,
+    .groups = "drop"
+  )
+
+mean_comparison_errror <- mean_error_by_variant %>%
+  summarise(
+    diff_type1_dif = mean_type1_dif[Variant == "Treatment"] - mean_type1_dif[Variant == "Control"],
+    diff_type2_dif = mean_type2_dif[Variant == "Treatment"] - mean_type2_dif[Variant == "Control"],
+    diff_error_dif = mean_error_dif[Variant == "Treatment"] - mean_error_dif[Variant == "Control"],
+    diff_type1_per = mean_type1_percent[Variant == "Treatment"] - mean_type1_percent[Variant == "Control"],
+    diff_type2_per = mean_type2_percent[Variant == "Treatment"] - mean_type2_percent[Variant == "Control"],
+    diff_error_per = mean_error_percent[Variant == "Treatment"] - mean_error_percent[Variant == "Control"]
+  )
+  
+print(mean_comparison_errror)
+```
+
+## **Recall**
+```{r}
+# Calculate mean values of different recall metrics for each Variant of the data set excluding loan officers who do not fully complete 10 loan reviews.
+mean_recall_by_variant <- recall_data %>%
+  group_by(Variant) %>%
+  summarise(
+    mean_recall_init = mean(recall_init),
+    mean_recall_fin = mean(recall_fin), #Final recall
+    mean_recall_dif = mean(recall_dif), #Change in recall
+    .groups = "drop"
+  )
+
+mean_comparison_recall <- mean_recall_by_variant %>%
+  summarise(
+    diff_recall_init = mean_recall_init[Variant == "Treatment"] - mean_recall_init[Variant == "Control"],
+    diff_recall_fin = mean_recall_fin[Variant == "Treatment"] - mean_recall_fin[Variant == "Control"], #Final recall
+    diff_recall_dif = mean_recall_dif[Variant == "Treatment"] - mean_recall_dif[Variant == "Control"] #Recall change
+  )
+  
+print(mean_comparison_recall)
+```
+
+
+# Step 4. Data Analysis: Compute & Interpret Effect Size
+## **Percentage Error Change Rate**
+```{r}
+# Store variants for type I, type II, weighted percentage error change for data set excluding loan officers who did not fully complete any loan reviews.
+control_type1_dif <- error_change_data$type1_dif[error_change_data$Variant == "Control"]
+print(control_type1_dif)
+treatment_type1_dif <- error_change_data$type1_dif[error_change_data$Variant == "Treatment"]
+print(treatment_type1_dif)
+control_type2_dif <- error_change_data$type2_dif[error_change_data$Variant == "Control"]
+treatment_type2_dif <- error_change_data$type2_dif[error_change_data$Variant == "Treatment"]
+
+control_error_dif <- error_change_data$error_dif[error_change_data$Variant == "Control"]
+treatment_error_dif <- error_change_data$error_dif[error_change_data$Variant == "Treatment"]
+```
+
+```{r}
+# Calculate effect size for type I error change rate. Medium effect size. 
+cohens_d(treatment_type1_dif, control_type1_dif)
+effectsize::interpret_cohens_d(-0.72)
+
+# Calculate effect size for type II error change rate. Small effect size. 
+cohens_d(treatment_type2_dif, control_type2_dif)
+effectsize::interpret_cohens_d(-0.36)
+
+# Calculate effect size for weighted percentage error change rate. Large effect size.
+cohens_d(treatment_error_dif, control_error_dif)
+effectsize::interpret_cohens_d(-1.08)
+```
+
+```{r}
+# Calculate number of loan officers needed in each variant to reach 80% statistical power for type II error change. 
+pwr.t.test(power = .8, 
+           d = .36, 
+           sig.level = 0.05, 
+           type = "two.sample") 
+```
+
+## **Recall**
+```{r}
+# Store variants for recall for data set excluding loan officers who did not fully complete 10 loan reviews.
+control_recall_init <- recall_data$recall_init[recall_data$Variant == "Control"]
+treatment_recall_init <- recall_data$recall_init[recall_data$Variant == "Treatment"]
+
+control_recall_fin <- recall_data$recall_fin[recall_data$Variant == "Control"]
+treatment_recall_fin <- recall_data$recall_fin[recall_data$Variant == "Treatment"]
+
+control_recall_dif <- recall_data$recall_dif[recall_data$Variant == "Control"]
+treatment_recall_dif <- recall_data$recall_dif[recall_data$Variant == "Treatment"]
+```
+
+```{r}
+# Calculate effect size for recall
+# Calculate effect size for initial recall. Small effect size.
+cohens_d(treatment_recall_init, control_recall_init)
+effectsize::interpret_cohens_d(0.28)
+
+# Calculate effect size for final recall. Large effect size. 
+cohens_d(treatment_recall_fin, control_recall_fin)
+effectsize::interpret_cohens_d(1.37)
+
+# Calculate effect size for recall change. Medium effect size. 
+cohens_d(treatment_recall_dif, control_recall_dif)
+effectsize::interpret_cohens_d(0.67)
+```
+
+
+# Step 5. Visualization of Key Metrics
+## **Percentage Error Change Rate**
+```{r}
+# Visualize the distribution of Type I / Type II error differences and recall metrics across Control vs. Treatment groups using boxplots. 
+ggplot(error_change_data, aes(x = Variant, y = type1_dif, fill = Variant)) +
+  geom_boxplot() +
+  labs(
+    title = "Boxplot of Type I Error Difference by Variant",
+    x = "Variant (Control vs Treatment)",
+    y = "Type I Error Difference (Final - Init)"
+  ) +
+  theme_minimal()
+
+ggplot(error_change_data, aes(x = Variant, y = type2_dif, fill = Variant)) +
+  geom_boxplot() +
+  labs(
+    title = "Boxplot of Type II Error Difference by Variant",
+    x = "Variant (Control vs Treatment)",
+    y = "Type II Error Difference (Final - Init)"
+  ) +
+  theme_minimal()
+
+ggplot(error_change_data, aes(x = Variant, y = error_dif, fill = Variant)) +
+  geom_boxplot() +
+  labs(
+    title = "Boxplot of Weighted Error Difference by Variant",
+    x = "Variant (Control vs Treatment)",
+    y = "Weighted Error Difference (Final - Init)"
+  ) +
+  theme_minimal()
+```
+
+## **Recall**
+```{r}
+# Visualize the Boxplot for Recalls by Variant
+# Boxplot for Initial Recall by Variant
+ggplot(recall_data, aes(x = Variant, y = recall_init, fill = Variant)) +
+  geom_boxplot() +
+  labs(
+    title = "Boxplot of Initial Recall by Variant",
+    x = "Variant (Control vs. Treatment)",
+    y = "Initial Recall"
+  ) +
+  theme_minimal()
+
+# Boxplot for Final Recall by Variant
+ggplot(recall_data, aes(x = Variant, y = recall_fin, fill = Variant)) +
+  geom_boxplot() +
+  labs(
+    title = "Boxplot of Final Recall by Variant",
+    x = "Variant (Control vs. Treatment)",
+    y = "Final Recall"
+  ) +
+  theme_minimal()
+
+# Boxplot for Recall Difference (Final - Initial) by Variant
+ggplot(recall_data, aes(x = Variant, y = recall_dif, fill = Variant)) +
+  geom_boxplot() +
+  labs(
+    title = "Boxplot of Recall Difference by Variant",
+    x = "Variant (Control vs. Treatment)",
+    y = "Recall Difference (Final - Init)"
+  ) +
+  theme_minimal()
+```
