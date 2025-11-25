@@ -161,7 +161,7 @@ All analysis performed in **R**, using **tidyverse** and **ggplot2** for data cl
 
 | File | Description |
 |------|-------------|
-| `Code/ADA_Code.html` | R code for cleaning, analysis, and visualizations |
+| `Code/ADA_Code.html`(Code/ADA_Code.Rmd) | R code for cleaning, analysis, and visualizations |
 | `Data/ADAproject_2025_data.csv` | Raw experimental data |
 | `Reports/IB98D0_Group32.pdf` | Full technical report |
 
