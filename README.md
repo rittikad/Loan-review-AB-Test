@@ -160,11 +160,9 @@ All analysis conducted in **R**.
 
 | File | Description |
 |------|-------------|
-| `Code/Loan_Review_ABTest_Analysis.R` | R code for cleaning, analysis, and visualizations |
+| `Code/ADA_Code.html` | R code for cleaning, analysis, and visualizations|
 | `Data/ADAproject_2025_data.csv` | Raw experimental data |
-| `Reports/Loan_Review_ABTest_Report.pdf` | Full report |
-| `Reports/Presentation.pdf` | Executive summary slides |
-| `Visuals/` | Figures and visualizations used in report |
+| `Reports/IB98D0_Group32.pdf` | Full report |
 
 ---
 
