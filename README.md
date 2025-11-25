@@ -7,9 +7,6 @@
 
 ---
 
-
----
-
 ## ⭐ Executive Summary
 
 This analysis evaluates a **new AI-assisted loan review model** using a 10-day A/B experiment.  
